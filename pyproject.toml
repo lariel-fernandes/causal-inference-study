@@ -1,0 +1,18 @@
+[project]
+name = "csi"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.5.1",
+    "pandas>=2.2.3",
+    "numpy>=2.2.1",
+    "networkx>=3.4.2",
+    "matplotlib>=3.10.0",
+    "jupyter>=1.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
