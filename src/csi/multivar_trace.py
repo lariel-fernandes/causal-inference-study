@@ -105,15 +105,34 @@ class NodeRegression(torch.nn.Module):
     ):
         super().__init__()
         self.metadata = metadata or {}
-        self.A = torch.nn.Parameter(torch.rand((P, H, D), dtype=dtype))
-        self.B = torch.nn.Parameter(torch.rand((D, H * P), dtype=dtype))
+        self.P = P
+        self.D = D
+        self.H = H
+        self.A = torch.nn.Parameter(torch.rand((P*D, P*H), dtype=dtype))
+        self.B = torch.nn.Parameter(torch.rand((P*H, D), dtype=dtype))
+        self.mask = torch.zeros_like(self.A, dtype=dtype)
+
+        for i in range(P):
+            row_start, row_end, col_start, col_end = self._get_parent_weights_indices(i)
+            self.mask[row_start:row_end, col_start:col_end] = 1.0
+
+    def to(self, *args, **kwargs):
+        self.mask = self.mask.to(*args, **kwargs)
+        return super().to(*args, **kwargs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.A @ torch.as_tensor(x).unsqueeze(2).transpose(-1, -2)
-        return h.reshape(len(x), -1) @ self.B.T
+        return x @ (self.A * self.mask) @ self.B
 
     def get_parent_weights(self, parend_id: int) -> np.ndarray:
-        return self.A[parend_id].detach().numpy()
+        row_start, row_end, col_start, col_end = self._get_parent_weights_indices(parend_id)
+        return self.A[row_start:row_end, col_start:col_end].detach().cpu().numpy().T
+
+    def _get_parent_weights_indices(self, parent_id: int) -> Tuple[int, int, int, int]:
+        row_start = self.D * parent_id
+        row_end = self.D * (parent_id + 1)
+        col_start = self.H * parent_id
+        col_end = self.H * (parent_id + 1)
+        return row_start, row_end, col_start, col_end
 
     def fit(
         self,
@@ -131,10 +150,9 @@ class NodeRegression(torch.nn.Module):
         optimizer_kwargs = optimizer_kwargs or {"lr": 0.01}
         optimizer = optimizer_type(self.parameters(), **optimizer_kwargs)
 
-        x = torch.stack([torch.as_tensor(p) for p in parents], dim=1)
-        y = torch.as_tensor(target)
-        n_batches = math.ceil(len(target) / batch_size)
         loss = None
+        x = torch.hstack(tuple(parents))
+        n_batches = math.ceil(len(target) / batch_size)
 
         if register_hooks:
             register_hooks(self)
@@ -143,7 +161,7 @@ class NodeRegression(torch.nn.Module):
             for batch_idx in range(n_batches):
                 start = batch_size * batch_idx
                 end = start + batch_size
-                loss = criterion(self.forward(x[start:end]), y[start:end])
+                loss = criterion(self.forward(x[start:end]), target[start:end])
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -237,6 +255,9 @@ def adjusted_graph(
     graph: nx.DiGraph,
     node_samples: Dict[NodeId, np.ndarray],  # noqa
     scores: Dict[Tuple[NodeId, NodeId], Tuple[float, float]],
+    criterion: Callable[[float, float], Tuple[Relation, float]] = (
+        lambda c, a: (Relation.CAUSAL if c > a else Relation.ANTI_CAUSAL, c if c > a else a)
+    ),
 ) -> nx.DiGraph:
     """Get adjusted graph according to causal and anticausal scores of ambiguous edges in graph."""
     adjusted = nx.DiGraph()
@@ -249,10 +270,9 @@ def adjusted_graph(
         if relation := relations[edge]:
             adjusted.add_edge(src, dst, relation=relation)
         else:
-            causal, anti_causal = scores[edge]
-            if causal > anti_causal:
-                adjusted.add_edge(src, dst, relation=Relation.CAUSAL, score=causal)
-            else:
-                adjusted.add_edge(dst, src, relation=Relation.CAUSAL, score=anti_causal)
+            relation, score = criterion(*scores[edge])
+            if relation is Relation.ANTI_CAUSAL:
+                src, dst = dst, src
+            adjusted.add_edge(src, dst, relation=relation, score=score)
 
     return adjusted
