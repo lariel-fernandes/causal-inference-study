@@ -1,4 +1,8 @@
-"""Structure identification using multivariate trace criteria."""
+"""
+Structural Graph Identification using a variant
+of the Trace Condition for multi-variable scenarios.
+"""
+
 import logging
 import math
 from enum import Enum
